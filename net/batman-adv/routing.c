@@ -76,7 +76,7 @@ static void _batadv_update_route(struct batadv_priv *bat_priv,
 	if (neigh_node)
 		kref_get(&neigh_node->refcount);
 
-	curr_router = rcu_replace_pointer(orig_ifinfo->router, neigh_node,
+	curr_router = rcu_swap_protected(orig_ifinfo->router, neigh_node,
 					  true);
 	spin_unlock_bh(&orig_node->neigh_list_lock);
 	batadv_orig_ifinfo_put(orig_ifinfo);
