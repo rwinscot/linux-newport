@@ -8,7 +8,6 @@ Contents:
 
    netdev-FAQ
    af_xdp
-   batman-adv
    can
    can_ucan_protocol
    device_drivers/index
