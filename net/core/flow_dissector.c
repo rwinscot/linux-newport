@@ -643,6 +643,7 @@ __skb_flow_dissect_gre(const struct sk_buff *skb,
  *  FLOW_DISSECT_RET_OUT_GOOD when dissector should stop after encapsulation,
  *  otherwise FLOW_DISSECT_RET_OUT_BAD
  */
+/**
 static enum flow_dissect_ret
 __skb_flow_dissect_batadv(const struct sk_buff *skb,
 			  struct flow_dissector_key_control *key_control,
@@ -674,6 +675,7 @@ __skb_flow_dissect_batadv(const struct sk_buff *skb,
 
 	return FLOW_DISSECT_RET_PROTO_AGAIN;
 }
+*/
 
 static void
 __skb_flow_dissect_tcp(const struct sk_buff *skb,
@@ -1221,10 +1223,10 @@ proto_again:
 					       nhoff, hlen);
 		break;
 
-	case htons(ETH_P_BATMAN):
-		fdret = __skb_flow_dissect_batadv(skb, key_control, data,
-						  &proto, &nhoff, hlen, flags);
-		break;
+//	case htons(ETH_P_BATMAN):
+//		fdret = __skb_flow_dissect_batadv(skb, key_control, data,
+//						  &proto, &nhoff, hlen, flags);
+//		break;
 
 	default:
 		fdret = FLOW_DISSECT_RET_OUT_BAD;
