@@ -8,7 +8,6 @@
  */
 
 #include <linux/module.h>
-#include <linux/sched/signal.h>
 #include <linux/netdevice.h>
 #include <linux/ethtool.h>
 #include <linux/etherdevice.h>
@@ -20,6 +19,11 @@
 #include <linux/usb/usbnet.h>
 #include <linux/usb/cdc-wdm.h>
 #include <linux/u64_stats_sync.h>
+#include <linux/version.h>
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,11,0)
+#include <linux/sched/signal.h>
+#endif 
 
 /* This driver supports wwan (3G/LTE/?) devices using a vendor
  * specific management protocol called Qualcomm MSM Interface (QMI) -
@@ -44,6 +48,9 @@
  * These devices may alternatively/additionally be configured using AT
  * commands on a serial interface
  */
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,14,7)
+#define EVENT_NO_IP_ALIGN	13
+#endif
 
 /* driver specific data */
 struct qmi_wwan_state {
@@ -75,6 +82,18 @@ struct qmimux_priv {
 	struct pcpu_sw_netstats __percpu *stats64;
 };
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,13,0)
+static inline void *skb_put_data(struct sk_buff *skb, const void *data,
+				 unsigned int len)
+{
+	void *tmp = skb_put(skb, len);
+
+	memcpy(tmp, data, len);
+
+	return tmp;
+}
+#endif
+
 static int qmimux_open(struct net_device *dev)
 {
 	struct qmimux_priv *priv = netdev_priv(dev);
@@ -101,7 +120,7 @@ static netdev_tx_t qmimux_start_xmit(struct sk_buff *skb, struct net_device *dev
 	struct qmimux_hdr *hdr;
 	netdev_tx_t ret;
 
-	hdr = skb_push(skb, sizeof(struct qmimux_hdr));
+	hdr = (struct qmimux_hdr *)skb_push(skb, sizeof(struct qmimux_hdr));
 	hdr->pad = 0;
 	hdr->mux_id = priv->mux_id;
 	hdr->pkt_len = cpu_to_be16(len);
@@ -122,8 +141,13 @@ static netdev_tx_t qmimux_start_xmit(struct sk_buff *skb, struct net_device *dev
 	return ret;
 }
 
-static void qmimux_get_stats64(struct net_device *net,
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,11,0)
+void qmimux_get_stats64(struct net_device *net,
 			       struct rtnl_link_stats64 *stats)
+#else
+struct rtnl_link_stats64* qmimux_get_stats64(struct net_device *net,
+			       struct rtnl_link_stats64 *stats)
+#endif				   
 {
 	struct qmimux_priv *priv = netdev_priv(net);
 	unsigned int start;
@@ -151,6 +175,10 @@ static void qmimux_get_stats64(struct net_device *net,
 		stats->tx_packets += tx_packets;
 		stats->tx_bytes += tx_bytes;
 	}
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,11,0)
+	return stats;
+#endif	
 }
 
 static const struct net_device_ops qmimux_netdev_ops = {
@@ -159,6 +187,13 @@ static const struct net_device_ops qmimux_netdev_ops = {
 	.ndo_start_xmit  = qmimux_start_xmit,
 	.ndo_get_stats64 = qmimux_get_stats64,
 };
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,11,9)
+void qmimux_ndev_destructor(struct net_device *ndev)
+{
+	free_netdev(ndev);
+}
+#endif
 
 static void qmimux_setup(struct net_device *dev)
 {
@@ -169,7 +204,11 @@ static void qmimux_setup(struct net_device *dev)
 	dev->flags           = IFF_POINTOPOINT | IFF_NOARP | IFF_MULTICAST;
 	dev->netdev_ops      = &qmimux_netdev_ops;
 	dev->mtu             = 1500;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,11,9)
 	dev->needs_free_netdev = true;
+#else 
+	dev->destructor      = qmimux_ndev_destructor;
+#endif	
 }
 
 static struct net_device *qmimux_find_dev(struct usbnet *dev, u8 mux_id)
@@ -291,7 +330,12 @@ static int qmimux_register_device(struct net_device *real_dev, u8 mux_id)
 	/* Account for reference in struct qmimux_priv_priv */
 	dev_hold(real_dev);
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,15,0)
 	err = netdev_upper_dev_link(real_dev, new_dev, NULL);
+#else
+	err = netdev_upper_dev_link(real_dev, new_dev); 
+#endif 
+
 	if (err)
 		goto out_unregister_netdev;
 
@@ -338,8 +382,10 @@ static void qmi_wwan_netdev_setup(struct net_device *net)
 	} else if (!net->header_ops) { /* don't bother if already set */
 		ether_setup(net);
 		/* Restoring min/max mtu values set originally by usbnet */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,10,0)
 		net->min_mtu = 0;
 		net->max_mtu = ETH_MAX_MTU;
+#endif
 		clear_bit(EVENT_NO_IP_ALIGN, &dev->flags);
 		netdev_dbg(net, "mode: Ethernet\n");
 	}
@@ -620,7 +666,14 @@ static const struct net_device_ops qmi_wwan_netdev_ops = {
 	.ndo_start_xmit		= usbnet_start_xmit,
 	.ndo_tx_timeout		= usbnet_tx_timeout,
 	.ndo_change_mtu		= usbnet_change_mtu,
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,11,0)
+	.ndo_get_stats64	= dev_get_tstats64,
+#else
+    #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,12,0)
 	.ndo_get_stats64	= usbnet_get_stats64,
+    #endif
+#endif
 	.ndo_set_mac_address	= qmi_wwan_mac_addr,
 	.ndo_validate_addr	= eth_validate_addr,
 };
@@ -723,11 +776,15 @@ static int qmi_wwan_bind(struct usbnet *dev, struct usb_interface *intf)
 	u8 *buf = intf->cur_altsetting->extra;
 	int len = intf->cur_altsetting->extralen;
 	struct usb_interface_descriptor *desc = &intf->cur_altsetting->desc;
-	struct usb_cdc_union_desc *cdc_union;
-	struct usb_cdc_ether_desc *cdc_ether;
+	struct usb_cdc_union_desc *cdc_union = NULL;
+	struct usb_cdc_ether_desc *cdc_ether = NULL;
 	struct usb_driver *driver = driver_of(intf);
 	struct qmi_wwan_state *info = (void *)&dev->data;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,4,0)
 	struct usb_cdc_parsed_header hdr;
+#else
+	u32 found = 0;
+#endif
 
 	BUILD_BUG_ON((sizeof(((struct usbnet *)0)->data) <
 		      sizeof(struct qmi_wwan_state)));
@@ -736,10 +793,73 @@ static int qmi_wwan_bind(struct usbnet *dev, struct usb_interface *intf)
 	info->control = intf;
 	info->data = intf;
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,4,0)
 	/* and a number of CDC descriptors */
 	cdc_parse_cdc_header(&hdr, intf, buf, len);
 	cdc_union = hdr.usb_cdc_union_desc;
 	cdc_ether = hdr.usb_cdc_ether_desc;
+#else
+
+	/* and a number of CDC descriptors */
+	while (len > 3) {
+		struct usb_descriptor_header *h = (void *)buf;
+
+		/* ignore any misplaced descriptors */
+		if (h->bDescriptorType != USB_DT_CS_INTERFACE)
+			goto next_desc;
+
+		/* buf[2] is CDC descriptor subtype */
+		switch (buf[2]) {
+		case USB_CDC_HEADER_TYPE:
+			if (found & 1 << USB_CDC_HEADER_TYPE) {
+				dev_dbg(&intf->dev, "extra CDC header\n");
+				goto err;
+			}
+			if (h->bLength != sizeof(struct usb_cdc_header_desc)) {
+				dev_dbg(&intf->dev, "CDC header len %u\n",
+					h->bLength);
+				goto err;
+			}
+			break;
+		case USB_CDC_UNION_TYPE:
+			if (found & 1 << USB_CDC_UNION_TYPE) {
+				dev_dbg(&intf->dev, "extra CDC union\n");
+				goto err;
+			}
+			if (h->bLength != sizeof(struct usb_cdc_union_desc)) {
+				dev_dbg(&intf->dev, "CDC union len %u\n",
+					h->bLength);
+				goto err;
+			}
+			cdc_union = (struct usb_cdc_union_desc *)buf;
+			break;
+		case USB_CDC_ETHERNET_TYPE:
+			if (found & 1 << USB_CDC_ETHERNET_TYPE) {
+				dev_dbg(&intf->dev, "extra CDC ether\n");
+				goto err;
+			}
+			if (h->bLength != sizeof(struct usb_cdc_ether_desc)) {
+				dev_dbg(&intf->dev, "CDC ether len %u\n",
+					h->bLength);
+				goto err;
+			}
+			cdc_ether = (struct usb_cdc_ether_desc *)buf;
+			break;
+		}
+
+		/* Remember which CDC functional descriptors we've seen.  Works
+		 * for all types we care about, of which USB_CDC_ETHERNET_TYPE
+		 * (0x0f) is the highest numbered
+		 */
+		if (buf[2] < 32)
+			found |= 1 << buf[2];
+
+next_desc:
+		len -= h->bLength;
+		buf += h->bLength;
+	}
+
+#endif 
 
 	/* Use separate control and data interfaces if we found a CDC Union */
 	if (cdc_union) {
@@ -1320,10 +1440,13 @@ static const struct usb_device_id products[] = {
 	{QMI_QUIRK_SET_DTR(0x1199, 0x907b, 8)},	/* Sierra Wireless EM74xx */
 	{QMI_QUIRK_SET_DTR(0x1199, 0x907b, 10)},/* Sierra Wireless EM74xx */
 	{QMI_QUIRK_SET_DTR(0x1199, 0x9091, 8)},	/* Sierra Wireless EM7565 */
+	{QMI_QUIRK_SET_DTR(0x1199, 0x90d9, 0)},	/* Sierra Wireless EM9191 */
+	{QMI_QUIRK_SET_DTR(0x1199, 0x90d3, 8)},	/* Sierra Wireless EM919X RmNET */	
 	{QMI_FIXED_INTF(0x1bbb, 0x011e, 4)},	/* Telekom Speedstick LTE II (Alcatel One Touch L100V LTE) */
 	{QMI_FIXED_INTF(0x1bbb, 0x0203, 2)},	/* Alcatel L800MA */
 	{QMI_FIXED_INTF(0x2357, 0x0201, 4)},	/* TP-LINK HSUPA Modem MA180 */
 	{QMI_FIXED_INTF(0x2357, 0x9000, 4)},	/* TP-LINK MA260 */
+	{QMI_QUIRK_SET_DTR(0x1bc7, 0x1031, 3)}, /* Telit LE910C1-EUX */
 	{QMI_QUIRK_SET_DTR(0x1bc7, 0x1040, 2)},	/* Telit LE922A */
 	{QMI_QUIRK_SET_DTR(0x1bc7, 0x1050, 2)},	/* Telit FN980 */
 	{QMI_FIXED_INTF(0x1bc7, 0x1100, 3)},	/* Telit ME910 */
@@ -1539,3 +1662,4 @@ module_usb_driver(qmi_wwan_driver);
 MODULE_AUTHOR("Bjørn Mork <bjorn@mork.no>");
 MODULE_DESCRIPTION("Qualcomm MSM Interface (QMI) WWAN driver");
 MODULE_LICENSE("GPL");
+MODULE_VERSION("1.3.2108.2");
