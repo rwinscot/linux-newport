@@ -31,7 +31,6 @@
 #include <linux/usb.h>
 #include <linux/usb/serial.h>
 #include <linux/serial.h>
-#include <linux/version.h>
 #include "usb-wwan.h"
 
 /*
@@ -133,38 +132,32 @@ int usb_wwan_tiocmset(struct tty_struct *tty,
 }
 EXPORT_SYMBOL(usb_wwan_tiocmset);
 
-static int get_serial_info(struct usb_serial_port *port,
-			   struct serial_struct __user *retinfo)
+int usb_wwan_get_serial_info(struct tty_struct *tty,
+			   struct serial_struct *ss)
 {
-	struct serial_struct tmp;
+	struct usb_serial_port *port = tty->driver_data;
 
-	memset(&tmp, 0, sizeof(tmp));
-	tmp.line            = port->minor;
-	tmp.port            = port->port_number;
-	tmp.baud_base       = tty_get_baud_rate(port->port.tty);
-	tmp.close_delay	    = port->port.close_delay / 10;
-	tmp.closing_wait    = port->port.closing_wait == ASYNC_CLOSING_WAIT_NONE ?
+	ss->line            = port->minor;
+	ss->port            = port->port_number;
+	ss->baud_base       = tty_get_baud_rate(port->port.tty);
+	ss->close_delay	    = port->port.close_delay / 10;
+	ss->closing_wait    = port->port.closing_wait == ASYNC_CLOSING_WAIT_NONE ?
 				 ASYNC_CLOSING_WAIT_NONE :
 				 port->port.closing_wait / 10;
-
-	if (copy_to_user(retinfo, &tmp, sizeof(*retinfo)))
-		return -EFAULT;
 	return 0;
 }
+EXPORT_SYMBOL(usb_wwan_get_serial_info);
 
-static int set_serial_info(struct usb_serial_port *port,
-			   struct serial_struct __user *newinfo)
+int usb_wwan_set_serial_info(struct tty_struct *tty,
+			   struct serial_struct *ss)
 {
-	struct serial_struct new_serial;
+	struct usb_serial_port *port = tty->driver_data;
 	unsigned int closing_wait, close_delay;
 	int retval = 0;
 
-	if (copy_from_user(&new_serial, newinfo, sizeof(new_serial)))
-		return -EFAULT;
-
-	close_delay = new_serial.close_delay * 10;
-	closing_wait = new_serial.closing_wait == ASYNC_CLOSING_WAIT_NONE ?
-			ASYNC_CLOSING_WAIT_NONE : new_serial.closing_wait * 10;
+	close_delay = ss->close_delay * 10;
+	closing_wait = ss->closing_wait == ASYNC_CLOSING_WAIT_NONE ?
+			ASYNC_CLOSING_WAIT_NONE : ss->closing_wait * 10;
 
 	mutex_lock(&port->port.mutex);
 
@@ -182,30 +175,7 @@ static int set_serial_info(struct usb_serial_port *port,
 	mutex_unlock(&port->port.mutex);
 	return retval;
 }
-
-int usb_wwan_ioctl(struct tty_struct *tty,
-		   unsigned int cmd, unsigned long arg)
-{
-	struct usb_serial_port *port = tty->driver_data;
-
-	dev_dbg(&port->dev, "%s cmd 0x%04x\n", __func__, cmd);
-
-	switch (cmd) {
-	case TIOCGSERIAL:
-		return get_serial_info(port,
-				       (struct serial_struct __user *) arg);
-	case TIOCSSERIAL:
-		return set_serial_info(port,
-				       (struct serial_struct __user *) arg);
-	default:
-		break;
-	}
-
-	dev_dbg(&port->dev, "%s arg not supported\n", __func__);
-
-	return -ENOIOCTLCMD;
-}
-EXPORT_SYMBOL(usb_wwan_ioctl);
+EXPORT_SYMBOL(usb_wwan_set_serial_info);
 
 int usb_wwan_write(struct tty_struct *tty, struct usb_serial_port *port,
 		   const unsigned char *buf, int count)
@@ -682,13 +652,9 @@ int usb_wwan_resume(struct usb_serial *serial)
 	for (i = 0; i < serial->num_ports; i++) {
 		port = serial->port[i];
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,7,0)
 		if (!tty_port_initialized(&port->port))
 			continue;
-#else
-		if (!test_bit(ASYNCB_INITIALIZED, &port->port.flags))
-			continue;
-#endif
+
 		portdata = usb_get_serial_port_data(port);
 
 		if (port->interrupt_in_urb) {
@@ -731,4 +697,3 @@ EXPORT_SYMBOL(usb_wwan_resume);
 MODULE_AUTHOR(DRIVER_AUTHOR);
 MODULE_DESCRIPTION(DRIVER_DESC);
 MODULE_LICENSE("GPL v2");
-MODULE_VERSION("1.0.2101.1");
